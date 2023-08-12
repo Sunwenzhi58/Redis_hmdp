@@ -8,18 +8,26 @@ import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 
 import javax.annotation.Resource;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
+import static com.hmdp.utils.RedisConstants.SHOP_GEO_KEY;
 
 
 @SpringBootTest
@@ -31,6 +39,8 @@ class HmDianPingApplicationTests {
     private ShopServiceImpl shopService;
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     private ExecutorService es = Executors.newFixedThreadPool(500);
 
@@ -60,6 +70,48 @@ class HmDianPingApplicationTests {
         long end = System.currentTimeMillis();
         System.out.println("time = "+ (end - begin));
 
+    }
+
+    @Test
+    void loadShopData() {
+        //1.查询店铺信息
+        List<Shop> list = shopService.list();
+        //2.把店铺分组，按照typeId分组，typeId一致的放到一个集合
+        Map<Long, List<Shop>> map = list.stream().collect(Collectors.groupingBy((Shop::getTypeId)));
+        //3.分批写入redis
+        for (Map.Entry<Long, List<Shop>> entry : map.entrySet()) {
+            //3.1获取类型id
+            Object typeId = entry.getKey();
+            String key = SHOP_GEO_KEY + typeId;
+            //3.2获取相同类型店铺集合
+            List<Shop> value = entry.getValue();
+            List<RedisGeoCommands.GeoLocation<String>> locations =new ArrayList<>();
+            //3.3写入redis
+            for (Shop shop : value) {
+                locations.add(new RedisGeoCommands.GeoLocation<>(
+                        shop.getId().toString(),
+                        new Point(shop.getX(), shop.getY())
+                ));
+            }
+            stringRedisTemplate.opsForGeo().add(key, locations);
+        }
+    }
+
+    @Test
+    void testHyperLogLog(){
+        String[] values = new String[1000];
+        int j = 0;
+        for (int i = 0; i < 1000000; i++){
+            j = i % 1000;
+            values[j] = "user_" + i;
+            if (j == 999){
+                //发送到redis
+                stringRedisTemplate.opsForHyperLogLog().add("hl2",values);
+            }
+        }
+        //统计数量
+        Long count = stringRedisTemplate.opsForHyperLogLog().size("hl2");
+        System.out.println(count);
     }
 
 
